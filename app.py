@@ -265,11 +265,12 @@ st.divider()
 # ──────────────────────────────────────────────
 # Abas
 # ──────────────────────────────────────────────
-tab_fin, tab_cli, tab_con, tab_os = st.tabs([
+tab_fin, tab_cli, tab_con, tab_os, tab_diag = st.tabs([
     "💰  Financeiro",
     "👥  Clientes",
     "📄  Contratos",
     "🔧  Ordens de Serviço",
+    "🔬  Diagnóstico API",
 ])
 
 
@@ -509,6 +510,56 @@ with tab_os:
             df_os_view = df_os_view[mask]
         st.dataframe(df_os_view, use_container_width=True, hide_index=True)
         st.caption(f"{len(df_os_view):,} OS exibidas de {len(df_os):,} total")
+
+# ════════════════════════════════════════════════
+# ABA DIAGNÓSTICO
+# ════════════════════════════════════════════════
+with tab_diag:
+    st.markdown("### 🔬 Diagnóstico da API GraphQL")
+    st.markdown("Use esta aba para verificar quais recursos e campos estão disponíveis no seu schema Hubsoft.")
+
+    if st.button("▶ Executar diagnóstico"):
+        with st.spinner("Consultando schema GraphQL…"):
+            try:
+                query_fields = api.list_query_fields()
+                st.success(f"✅ Conexão GraphQL OK — {len(query_fields)} recursos encontrados")
+
+                st.markdown("#### Recursos disponíveis na Query raiz")
+                if query_fields:
+                    cols = st.columns(3)
+                    for i, f in enumerate(sorted(query_fields)):
+                        cols[i % 3].markdown(f"- `{f}`")
+                else:
+                    st.warning("Nenhum campo encontrado na Query raiz.")
+
+                st.divider()
+                st.markdown("#### Campos por tipo")
+                for tipo in ["Cliente", "Contrato", "Cobranca", "Os", "OS",
+                              "OrdemServico", "Ticket", "Financeiro"]:
+                    campos = api.get_schema_fields(tipo)
+                    if campos:
+                        with st.expander(f"**{tipo}** — {len(campos)} campos"):
+                            st.code("\n".join(campos))
+
+            except Exception as e:
+                st.error(f"❌ Erro no diagnóstico: {e}")
+
+    st.divider()
+    st.markdown("#### Query GraphQL manual")
+    st.markdown("Teste qualquer query diretamente:")
+    query_input = st.text_area(
+        "Query GraphQL",
+        value='query {\n  clientes(page: 1, first: 3) {\n    paginatorInfo { total }\n    data { id_cliente nome_razaosocial }\n  }\n}',
+        height=150,
+    )
+    if st.button("▶ Executar query"):
+        with st.spinner("Executando…"):
+            try:
+                result = api._gql_raw(query_input)
+                st.json(result)
+            except Exception as e:
+                st.error(f"Erro: {e}")
+
 
 # ──────────────────────────────────────────────
 # Footer
