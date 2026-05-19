@@ -151,27 +151,34 @@ def styled_fig(fig):
 # ──────────────────────────────────────────────
 @st.cache_resource(show_spinner=False)
 def get_api():
-    return HubsoftAPI()
+    api = HubsoftAPI()
+    api.discover()   # introspection: descobre nomes reais dos recursos
+    return api
 
 
-@st.cache_data(ttl=300, show_spinner=False)   # 5 min de cache
+def safe_load(fn, *args, **kwargs):
+    """Executa fn com args; retorna (DataFrame, None) ou (DataFrame vazio, msg_erro)."""
+    try:
+        return fn(*args, **kwargs), None
+    except Exception as e:
+        return pd.DataFrame(), str(e)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def load_clientes(_api):
-    return _api.get_clientes()
-
+    return safe_load(_api.get_clientes)
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_contratos(_api):
-    return _api.get_contratos()
-
+    return safe_load(_api.get_contratos)
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_cobrancas(_api, de, ate):
-    return _api.get_cobrancas(de=de, ate=ate)
-
+    return safe_load(_api.get_cobrancas, de, ate)
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_os(_api, de, ate):
-    return _api.get_ordens_servico(de=de, ate=ate)
+    return safe_load(_api.get_ordens_servico, de, ate)
 
 
 def invalidar_cache():
@@ -222,17 +229,19 @@ de_str  = data_ini.strftime("%Y-%m-%d")
 ate_str = data_fim.strftime("%Y-%m-%d")
 
 with st.spinner("Conectando à API Hubsoft…"):
-    try:
-        df_cli  = load_clientes(api)
-        df_con  = load_contratos(api)
-        df_cob  = load_cobrancas(api, de_str, ate_str)
-        df_os   = load_os(api, de_str, ate_str)
-        api_ok  = True
-    except Exception as e:
-        st.error(f"❌ Erro ao conectar na API Hubsoft: {e}")
-        st.info("Verifique se o IP do servidor está liberado no Hubsoft e se as credenciais estão corretas.")
-        api_ok = False
-        st.stop()
+    df_cli,  err_cli  = load_clientes(api)
+    df_con,  err_con  = load_contratos(api)
+    df_cob,  err_cob  = load_cobrancas(api, de_str, ate_str)
+    df_os,   err_os   = load_os(api, de_str, ate_str)
+
+# Mostra banner de aviso se algum recurso falhou (sem travar o app)
+erros = [(n, e) for n, e in [("Clientes", err_cli), ("Contratos", err_con),
+                               ("Cobranças", err_cob), ("OS", err_os)] if e]
+if erros:
+    with st.expander(f"⚠️ {len(erros)} recurso(s) com erro — clique para ver detalhes"):
+        for nome, msg in erros:
+            st.error(f"**{nome}:** {msg}")
+        st.info("Use a aba 🔬 Diagnóstico para ver os recursos disponíveis no seu schema.")
 
 # ──────────────────────────────────────────────
 # Header principal
@@ -516,49 +525,53 @@ with tab_os:
 # ════════════════════════════════════════════════
 with tab_diag:
     st.markdown("### 🔬 Diagnóstico da API GraphQL")
-    st.markdown("Use esta aba para verificar quais recursos e campos estão disponíveis no seu schema Hubsoft.")
 
-    if st.button("▶ Executar diagnóstico"):
-        with st.spinner("Consultando schema GraphQL…"):
-            try:
-                query_fields = api.list_query_fields()
-                st.success(f"✅ Conexão GraphQL OK — {len(query_fields)} recursos encontrados")
+    # Mapeamento atual
+    st.markdown("#### Mapeamento automático de recursos")
+    if api.resource_map:
+        for cat, real in api.resource_map.items():
+            st.success(f"✅ **{cat}** → `{real}`")
+    else:
+        st.warning("Nenhum recurso mapeado ainda.")
 
-                st.markdown("#### Recursos disponíveis na Query raiz")
-                if query_fields:
-                    cols = st.columns(3)
-                    for i, f in enumerate(sorted(query_fields)):
-                        cols[i % 3].markdown(f"- `{f}`")
-                else:
-                    st.warning("Nenhum campo encontrado na Query raiz.")
-
-                st.divider()
-                st.markdown("#### Campos por tipo")
-                for tipo in ["Cliente", "Contrato", "Cobranca", "Os", "OS",
-                              "OrdemServico", "Ticket", "Financeiro"]:
-                    campos = api.get_schema_fields(tipo)
-                    if campos:
-                        with st.expander(f"**{tipo}** — {len(campos)} campos"):
-                            st.code("\n".join(campos))
-
-            except Exception as e:
-                st.error(f"❌ Erro no diagnóstico: {e}")
+    not_found = [c for c in ["clientes","contratos","cobrancas","os"]
+                 if c not in api.resource_map]
+    if not_found:
+        st.error(f"❌ Recursos **não encontrados** no schema: {', '.join(not_found)}")
 
     st.divider()
+
+    # Todos os campos disponíveis
+    st.markdown("#### Todos os recursos disponíveis no schema")
+    if api.query_fields:
+        cols = st.columns(3)
+        for i, f in enumerate(sorted(api.query_fields)):
+            cols[i % 3].markdown(f"- `{f}`")
+    else:
+        if st.button("▶ Carregar campos do schema"):
+            with st.spinner("Consultando schema…"):
+                try:
+                    api.discover()
+                    st.rerun()
+                except Exception as e:
+                    st.error(str(e))
+
+    st.divider()
+
+    # Query manual
     st.markdown("#### Query GraphQL manual")
-    st.markdown("Teste qualquer query diretamente:")
     query_input = st.text_area(
         "Query GraphQL",
-        value='query {\n  clientes(page: 1, first: 3) {\n    paginatorInfo { total }\n    data { id_cliente nome_razaosocial }\n  }\n}',
-        height=150,
+        value='{\n  __type(name: "Query") {\n    fields { name }\n  }\n}',
+        height=130,
     )
-    if st.button("▶ Executar query"):
+    if st.button("▶ Executar"):
         with st.spinner("Executando…"):
             try:
-                result = api._gql_raw(query_input)
+                result = api._gql(query_input)
                 st.json(result)
             except Exception as e:
-                st.error(f"Erro: {e}")
+                st.error(str(e))
 
 
 # ──────────────────────────────────────────────
